@@ -4827,6 +4827,7 @@ dependencies = [
  "crossbeam-channel",
  "log",
  "solana-accounts-db",
+ "solana-clap-utils",
  "solana-core",
  "solana-ledger",
  "solana-measure",

@@ -1,48 +1,38 @@
 use std::{
     path::{Path, PathBuf},
     process::exit,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, RwLock,
-    },
+    sync::{atomic::AtomicBool, Arc, RwLock},
 };
 
-use clap::{value_t, values_t_or_exit, ArgMatches};
+use clap::{value_t, ArgMatches};
 use crossbeam_channel::unbounded;
-use log::{info, warn};
+use log::info;
 use solana_accounts_db::utils::{
     create_all_accounts_run_and_snapshot_dirs, move_and_async_delete_path_contents,
 };
-use solana_core::{
-    accounts_hash_verifier::AccountsHashVerifier, validator::BlockVerificationMethod,
-};
 use solana_ledger::{
-    bank_forks_utils::{self, BankForksUtilsError},
+    bank_forks_utils::BankForksUtilsError,
     blockstore::{Blockstore, BlockstoreError},
     blockstore_options::{
         AccessType, BlockstoreOptions, BlockstoreRecoveryMode, LedgerColumnOptions,
         ShredStorageType,
     },
     blockstore_processor::{BlockstoreProcessorError, ProcessOptions, TransactionStatusSender},
+    use_snapshot_archives_at_startup::UseSnapshotArchivesAtStartup,
 };
-use solana_measure::{
-    measure::{self, Measure},
-    measure_time, measure_us,
-};
+use solana_measure::measure_time;
 use solana_rpc::transaction_status_service::TransactionStatusService;
 use solana_runtime::{
     accounts_background_service::AccountsBackgroundService,
     bank_forks::BankForks,
-    prioritization_fee_cache::PrioritizationFeeCache,
     snapshot_config::SnapshotConfig,
     snapshot_hash::StartingSnapshotHashes,
     snapshot_utils::{self, clean_orphaned_account_snapshot_dirs},
 };
 use solana_sdk::{clock::Slot, genesis_config::GenesisConfig};
-use solana_unified_scheduler_pool::DefaultSchedulerPool;
 use thiserror::Error;
 
-use crate::ledger_path::LEDGER_TOOL_DIRECTORY;
+use crate::{bank_forks_utils::load_bank_forks, ledger_path::LEDGER_TOOL_DIRECTORY};
 
 pub struct LoadAndProcessLedgerOutput {
     pub bank_forks: Arc<RwLock<BankForks>>,
@@ -277,19 +267,18 @@ pub fn load_and_process_ledger(
         (transaction_status_sender, None)
     };
 
-    let (bank_forks, leader_schedule_cache, starting_snapshot_hashes, ..) =
-        bank_forks_utils::load_bank_forks(
-            genesis_config,
-            blockstore.as_ref(),
-            account_paths,
-            snapshot_config.as_ref(),
-            &process_options,
-            None,
-            None, // Maybe support this later, though
-            accounts_update_notifier,
-            exit.clone(),
-        )
-        .map_err(LoadAndProcessLedgerError::LoadBankForks)?;
+    // let (bank_forks, leader_schedule_cache, starting_snapshot_hashes, ..) = load_bank_forks(
+    load_bank_forks(
+        genesis_config,
+        blockstore.as_ref(),
+        account_paths,
+        snapshot_config.as_ref(),
+        &process_options,
+        None,
+        None, // Maybe support this later, though
+        accounts_update_notifier,
+        exit.clone(),
+    )?;
 
     Ok(())
 }
@@ -545,11 +534,11 @@ fn open_blockstore_with_temporary_primary_access(
 //         .map(|ix| ix.program_id(account_keys))
 // }
 
-// /// Get the AccessType required, based on `process_options`
-// pub(crate) fn get_access_type(process_options: &ProcessOptions) -> AccessType {
-//     match process_options.use_snapshot_archives_at_startup {
-//         UseSnapshotArchivesAtStartup::Always => AccessType::Secondary,
-//         UseSnapshotArchivesAtStartup::Never => AccessType::PrimaryForMaintenance,
-//         UseSnapshotArchivesAtStartup::WhenNewest => AccessType::PrimaryForMaintenance,
-//     }
-// }
+/// Get the AccessType required, based on `process_options`
+pub fn get_access_type(process_options: &ProcessOptions) -> AccessType {
+    match process_options.use_snapshot_archives_at_startup {
+        UseSnapshotArchivesAtStartup::Always => AccessType::Secondary,
+        UseSnapshotArchivesAtStartup::Never => AccessType::PrimaryForMaintenance,
+        UseSnapshotArchivesAtStartup::WhenNewest => AccessType::PrimaryForMaintenance,
+    }
+}

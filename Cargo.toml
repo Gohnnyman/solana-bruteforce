@@ -17,6 +17,7 @@ solana-measure = "2.1.10"
 solana-rpc = "2.1.10"
 solana-core = "2.1.10"
 solana-unified-scheduler-pool = "2.1.10"
+solana-clap-utils = "2.1.10"
 
 
 crossbeam-channel = "0.5.14"
