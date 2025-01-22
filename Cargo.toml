@@ -1,0 +1,22 @@
+[package]
+name = "solana-bruteforce"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+thiserror = "2.0.11"
+clap = "2.33.3"
+log = "0.4.25"
+
+solana-sdk = "2.1.10"
+solana-ledger = "2.1.10"
+solana-runtime = "2.1.10"
+solana-accounts-db = "2.1.10"
+solana-measure = "2.1.10"
+solana-rpc = "2.1.10"
+solana-core = "2.1.10"
+solana-unified-scheduler-pool = "2.1.10"
+
+
+crossbeam-channel = "0.5.14"
