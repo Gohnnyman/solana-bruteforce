@@ -1,2 +1,3 @@
-validator-ledger/** 
+validator-ledger/* 
 target
+tmp/

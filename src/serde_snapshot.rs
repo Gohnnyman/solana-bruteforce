@@ -608,6 +608,7 @@ where
         storage_and_next_append_vec_id.storage.len()
     );
     let mut accounts = HashSet::new();
+    let mut accounts_on_curve = HashSet::new();
     // Find the smallest and largest keys
     let (min_key, max_key) = storage_and_next_append_vec_id.storage.iter().fold(
         (None::<u64>, None::<u64>),
@@ -623,14 +624,18 @@ where
         storage.storage.accounts.scan_accounts(|acc| {
             let key = acc.pubkey();
             accounts.insert(key.clone());
+            if key.is_on_curve() {
+                accounts_on_curve.insert(key.clone());
+            }
         });
     }
 
     error!(
-        "Got min_key: {:?}, max_key: {:?}, total: {:?}",
+        "Got min_key: {:?}, max_key: {:?}, total: {:?}, on_curve: {:?}",
         min_key,
         max_key,
-        accounts.len()
+        accounts.len(),
+        accounts_on_curve.len()
     );
 
     // Store the accounts hash & capitalization, from the full snapshot, in the new AccountsDb

@@ -92,22 +92,43 @@ pub fn rebuild_bank_from_unarchived_snapshots(
         "ACCOUNTS ABOBA1: {}",
         storage_and_next_append_vec_id.storage.len()
     );
+    let mut accounts = HashSet::new();
+    let mut accounts_on_curve = HashSet::new();
     // Find the smallest and largest keys
-    let (min_key, max_key, total) = storage_and_next_append_vec_id.storage.iter().fold(
-        (None::<u64>, None::<u64>, None::<u64>),
-        |(min, max, total), entry| {
+    let (min_key, max_key) = storage_and_next_append_vec_id.storage.iter().fold(
+        (None::<u64>, None::<u64>),
+        |(min, max), entry| {
             let key = *entry.key();
-            let value = entry.value();
             (
                 Some(min.map_or(key, |m| m.min(key))),
                 Some(max.map_or(key, |m| m.max(key))),
-                Some(total.map_or(key, |t| t + value.storage.count() as u64)),
             )
         },
     );
+    for (_, storage) in storage_and_next_append_vec_id.storage.clone() {
+        storage.storage.accounts.scan_accounts(|acc| {
+            let key = acc.pubkey();
+            accounts.insert(key.clone());
+            if key.is_on_curve() {
+                accounts_on_curve.insert(key.clone());
+            }
+        });
+
+        storage.storage.accounts.scan_accounts(|acc| {
+            let key = acc.pubkey();
+            accounts.insert(key.clone());
+            if key.is_on_curve() {
+                accounts_on_curve.insert(key.clone());
+            }
+        });
+    }
+
     error!(
-        "Got min_key: {:?}, max_key: {:?}, total: {:?}",
-        min_key, max_key, total
+        "Got min_key: {:?}, max_key: {:?}, total: {:?}, on_curve: {:?}",
+        min_key,
+        max_key,
+        accounts.len(),
+        accounts_on_curve.len()
     );
 
     let snapshot_root_paths = SnapshotRootPaths {

@@ -15,6 +15,7 @@ use clap::{
 use solana_accounts_db::hardened_unpack::open_genesis_config;
 use solana_bruteforce::{
     args::{self, parse_process_options},
+    kria,
     ledger_path::canonicalize_ledger_path,
     ledger_utils::{get_access_type, load_and_process_ledger, open_blockstore},
 };
@@ -299,6 +300,14 @@ fn main() -> Result<()> {
                         .help("Limit output to accounts owned by the provided program pubkey"),
                 ),
         )
+        .subcommand(
+            SubCommand::with_name("test").arg(
+                Arg::with_name("path")
+                    .long("path")
+                    .takes_value(true)
+                    .value_name("PATH"),
+            ),
+        )
         .get_matches();
 
     let ledger_path = PathBuf::from(value_t_or_exit!(matches, "ledger_path", String));
@@ -318,6 +327,12 @@ fn main() -> Result<()> {
                 process_options,
                 None,
             )?;
+        }
+
+        ("test", Some(_arg_matches)) => {
+            info!("Running test");
+            let path = _arg_matches.value_of("path").unwrap();
+            kria::scan_accounts(path.into())?;
         }
 
         _ => panic!("Unrecognised subcommand"),
