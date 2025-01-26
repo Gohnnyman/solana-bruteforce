@@ -1,5 +1,6 @@
 use anyhow::Result;
 use core::panic;
+use log::info;
 use std::{
     fmt::Display,
     path::{Path, PathBuf},
@@ -66,6 +67,10 @@ where
 const MAX_GENESIS_ARCHIVE_UNPACKED_SIZE_STR: &str = "10485760";
 
 fn main() -> Result<()> {
+    env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Info) // Set default log level to `info`
+        .init();
+
     let load_genesis_config_arg = args::load_genesis_arg();
     let accounts_db_config_args = args::accounts_db_args();
     let snapshot_config_args = args::snapshot_args();

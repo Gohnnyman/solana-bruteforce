@@ -1,7 +1,8 @@
 use {
+    crate::snapshot_bank_utils::rebuild_bank_from_unarchived_snapshots,
     log::*,
     solana_accounts_db::{
-        accounts_db::AtomicAccountsFileId,
+        account_storage::AccountStorageMap, accounts_db::AtomicAccountsFileId,
         accounts_update_notifier_interface::AccountsUpdateNotifier, utils::delete_contents_of_path,
     },
     solana_ledger::{
@@ -11,7 +12,7 @@ use {
         leader_schedule_cache::LeaderScheduleCache,
         use_snapshot_archives_at_startup::{self, UseSnapshotArchivesAtStartup},
     },
-    solana_measure::measure_time,
+    solana_measure::{measure::Measure, measure_time},
     solana_runtime::{
         bank_forks::BankForks,
         snapshot_archive_info::{
@@ -19,7 +20,9 @@ use {
         },
         snapshot_config::SnapshotConfig,
         snapshot_hash::StartingSnapshotHashes,
-        snapshot_utils::{self, rebuild_storages_from_snapshot_dir},
+        snapshot_utils::{
+            self, rebuild_storages_from_snapshot_dir, verify_and_unarchive_snapshots,
+        },
     },
     solana_sdk::genesis_config::GenesisConfig,
     std::{
@@ -69,6 +72,13 @@ pub type LoadResult = result::Result<
     ),
     BankForksUtilsError,
 >;
+
+/// Helper type for passing around account storage map and next append vec id
+/// for reconstructing accounts from a snapshot
+pub(crate) struct StorageAndNextAccountsFileId {
+    pub storage: AccountStorageMap,
+    pub next_append_vec_id: AtomicAccountsFileId,
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn load_bank_forks(
@@ -219,125 +229,107 @@ fn bank_forks_from_snapshot(
         }
     };
 
-    let Some(bank_snapshot) = fastboot_snapshot else {
-        panic!("No snapshots to load");
-    };
+    // let Some(bank_snapshot) = fastboot_snapshot else {
+    //     panic!("No snapshots to load");
+    // };
 
     ///////////
+    // Given that we are going to boot from an archive, the append vecs held in the snapshot dirs for fast-boot should
+    // be released.  They will be released by the account_background_service anyway.  But in the case of the account_paths
+    // using memory-mounted file system, they are not released early enough to give space for the new append-vecs from
+    // the archives, causing the out-of-memory problem.  So, purge the snapshot dirs upfront before loading from the archive.
+    snapshot_utils::purge_all_bank_snapshots(&snapshot_config.bank_snapshots_dir);
+
     info!(
-        "Loading bank from snapshot dir: {}",
-        bank_snapshot.snapshot_dir.display()
+        "Loading bank from full snapshot archive: {}, and incremental snapshot archive: {:?}",
+        full_snapshot_archive_info.path().display(),
+        incremental_snapshot_archive_info
+            .as_ref()
+            .map(
+                |incremental_snapshot_archive_info| incremental_snapshot_archive_info
+                    .path()
+                    .display()
+            )
     );
 
-    // Clear the contents of the account paths run directories.  When constructing the bank, the appendvec
-    // files will be extracted from the snapshot hardlink directories into these run/ directories.
-    for path in &account_paths {
-        delete_contents_of_path(path);
-    }
-
-    let next_append_vec_id = Arc::new(AtomicAccountsFileId::new(0));
-    let storage_access = process_options
-        .accounts_db_config
-        .as_ref()
-        .map(|config| config.storage_access)
-        .unwrap_or_default();
-
-    let (storages, measure_rebuild_storages) = measure_time!(
-        rebuild_storages_from_snapshot_dir(
-            &bank_snapshot,
+    let (unarchived_full_snapshot, mut unarchived_incremental_snapshot, next_append_vec_id) =
+        verify_and_unarchive_snapshots(
+            snapshot_config.bank_snapshots_dir.clone(),
+            &full_snapshot_archive_info,
+            incremental_snapshot_archive_info.as_ref(),
             &account_paths,
-            next_append_vec_id.clone(),
-            storage_access,
-        )?,
-        "rebuild storages from snapshot dir"
-    );
+            process_options
+                .accounts_db_config
+                .as_ref()
+                .map(|config| config.storage_access)
+                .unwrap_or_default(),
+        )?;
 
-    info!("{}", measure_rebuild_storages);
-
-    for (slot, storage) in storages {
-        error!(
-            "ACCOUNT AMOUNT FOR SLOT {}: {}",
-            slot,
-            storage.storage.accounts.len()
-        );
+    let mut storage = unarchived_full_snapshot.storage;
+    if let Some(ref mut unarchive_preparation_result) = unarchived_incremental_snapshot {
+        let incremental_snapshot_storages =
+            std::mem::take(&mut unarchive_preparation_result.storage);
+        storage.extend(incremental_snapshot_storages);
     }
 
-    /////////////
-    // let bank = if let Some(fastboot_snapshot) = fastboot_snapshot {
-    //     let (bank, _) = bank_from_snapshot_dir(
-    //         &account_paths,
-    //         &fastboot_snapshot,
-    //         genesis_config,
-    //         &process_options.runtime_config,
-    //         process_options.debug_keys.clone(),
-    //         None,
-    //         process_options.account_indexes.clone(),
-    //         process_options.limit_load_slot_count_from_snapshot,
-    //         process_options.shrink_ratio,
-    //         process_options.verify_index,
-    //         process_options.accounts_db_config.clone(),
-    //         accounts_update_notifier,
-    //         exit,
-    //     )
-    //     .map_err(|err| BankForksUtilsError::BankFromSnapshotsDirectory {
-    //         source: err,
-    //         path: fastboot_snapshot.snapshot_path(),
-    //     })?;
-    //     bank
-    // } else {
-    //     // Given that we are going to boot from an archive, the append vecs held in the snapshot dirs for fast-boot should
-    //     // be released.  They will be released by the account_background_service anyway.  But in the case of the account_paths
-    //     // using memory-mounted file system, they are not released early enough to give space for the new append-vecs from
-    //     // the archives, causing the out-of-memory problem.  So, purge the snapshot dirs upfront before loading from the archive.
-    //     snapshot_utils::purge_all_bank_snapshots(&snapshot_config.bank_snapshots_dir);
+    let storage_and_next_append_vec_id = StorageAndNextAccountsFileId {
+        storage,
+        next_append_vec_id,
+    };
 
-    //     let (bank, _) = snapshot_bank_utils::bank_from_snapshot_archives(
-    //         &account_paths,
-    //         &snapshot_config.bank_snapshots_dir,
-    //         &full_snapshot_archive_info,
-    //         incremental_snapshot_archive_info.as_ref(),
-    //         genesis_config,
-    //         &process_options.runtime_config,
-    //         process_options.debug_keys.clone(),
-    //         None,
-    //         process_options.account_indexes.clone(),
-    //         process_options.limit_load_slot_count_from_snapshot,
-    //         process_options.shrink_ratio,
-    //         process_options.accounts_db_test_hash_calculation,
-    //         process_options.accounts_db_skip_shrink,
-    //         process_options.accounts_db_force_initial_clean,
-    //         process_options.verify_index,
-    //         process_options.accounts_db_config.clone(),
-    //         accounts_update_notifier,
-    //         exit,
-    //     )
-    //     .map_err(|err| BankForksUtilsError::BankFromSnapshotsArchive {
-    //         source: err,
-    //         full_snapshot_archive: full_snapshot_archive_info.path().display().to_string(),
-    //         incremental_snapshot_archive: incremental_snapshot_archive_info
-    //             .as_ref()
-    //             .map(|archive| archive.path().display().to_string())
-    //             .unwrap_or("none".to_string()),
-    //     })?;
-    //     bank
-    // };
+    let mut measure_rebuild = Measure::start("rebuild bank from snapshots");
+    let (bank, info) = rebuild_bank_from_unarchived_snapshots(
+        &unarchived_full_snapshot.unpacked_snapshots_dir_and_version,
+        unarchived_incremental_snapshot
+            .as_ref()
+            .map(|unarchive_preparation_result| {
+                &unarchive_preparation_result.unpacked_snapshots_dir_and_version
+            }),
+        &account_paths,
+        storage_and_next_append_vec_id,
+        genesis_config,
+        &process_options.runtime_config,
+        process_options.debug_keys.clone(),
+        None,
+        process_options.limit_load_slot_count_from_snapshot,
+        process_options.verify_index,
+        process_options.accounts_db_config.clone(),
+        accounts_update_notifier,
+        exit,
+    )?;
+    measure_rebuild.stop();
+    info!("{}", measure_rebuild);
 
-    // let full_snapshot_hash = FullSnapshotHash((
-    //     full_snapshot_archive_info.slot(),
-    //     *full_snapshot_archive_info.hash(),
-    // ));
-    // let incremental_snapshot_hash =
-    //     incremental_snapshot_archive_info.map(|incremental_snapshot_archive_info| {
-    //         IncrementalSnapshotHash((
-    //             incremental_snapshot_archive_info.slot(),
-    //             *incremental_snapshot_archive_info.hash(),
-    //         ))
-    //     });
-    // let starting_snapshot_hashes = StartingSnapshotHashes {
-    //     full: full_snapshot_hash,
-    //     incremental: incremental_snapshot_hash,
-    // };
-    // Ok((BankForks::new_rw_arc(bank), starting_snapshot_hashes))
+    // info!(
+    //     "Loading bank from snapshot dir: {}",
+    //     bank_snapshot.snapshot_dir.display()
+    // );
+
+    // // Clear the contents of the account paths run directories.  When constructing the bank, the appendvec
+    // // files will be extracted from the snapshot hardlink directories into these run/ directories.
+    // for path in &account_paths {
+    //     delete_contents_of_path(path);
+    // }
+
+    // let next_append_vec_id = Arc::new(AtomicAccountsFileId::new(0));
+    // let storage_access = process_options
+    //     .accounts_db_config
+    //     .as_ref()
+    //     .map(|config| config.storage_access)
+    //     .unwrap_or_default();
+
+    // let (storages, measure_rebuild_storages) = measure_time!(
+    //     rebuild_storages_from_snapshot_dir(
+    //         &bank_snapshot,
+    //         &account_paths,
+    //         next_append_vec_id.clone(),
+    //         storage_access,
+    //     )?,
+    //     "rebuild storages from snapshot dir"
+    // );
+
+    // info!("{}", measure_rebuild_storages);
+
     Ok(())
 }
 
