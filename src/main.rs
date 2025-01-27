@@ -15,9 +15,9 @@ use clap::{
 use solana_accounts_db::hardened_unpack::open_genesis_config;
 use solana_bruteforce::{
     args::{self, parse_process_options},
-    kria,
     ledger_path::canonicalize_ledger_path,
     ledger_utils::{get_access_type, load_and_process_ledger, open_blockstore},
+    scan_accounts,
 };
 use solana_core::validator::BlockVerificationMethod;
 use solana_sdk::{genesis_config::GenesisConfig, pubkey::Pubkey, signature::read_keypair_file};
@@ -67,9 +67,11 @@ where
 // test_max_genesis_archive_unpacked_size_constant
 const MAX_GENESIS_ARCHIVE_UNPACKED_SIZE_STR: &str = "10485760";
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> Result<()> {
     env_logger::Builder::new()
         .filter_level(log::LevelFilter::Info) // Set default log level to `info`
+        .parse_default_env()
         .init();
 
     let load_genesis_config_arg = args::load_genesis_arg();
@@ -332,7 +334,7 @@ fn main() -> Result<()> {
         ("test", Some(_arg_matches)) => {
             info!("Running test");
             let path = _arg_matches.value_of("path").unwrap();
-            kria::scan_accounts(path.into())?;
+            scan_accounts::scan_accounts(path.into()).await?;
         }
 
         _ => panic!("Unrecognised subcommand"),
