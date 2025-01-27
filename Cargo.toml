@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.95"
 thiserror = "2.0.11"
-clap = "2.33.3"
+clap = { version = "4.5", features = ["derive", "cargo"] }
 log = "0.4.25"
 
 solana-sdk = "2.1.10"
@@ -27,3 +27,4 @@ sqlx = { version = "0.8.3", features = [
 rayon = "1.10.0"
 num_cpus = "1.16.0"
 futures = "0.3.31"
+config = "0.15.6"

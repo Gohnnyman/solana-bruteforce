@@ -6,19 +6,19 @@ use std::sync::Arc;
 use std::{hash, mem};
 
 use futures::future::join_all;
-use futures::SinkExt;
 use log::{debug, error, info};
 use memmap2::Mmap;
-use rayon::iter::ParallelIterator;
 use serde::{Deserialize, Serialize};
 use solana_accounts_db::accounts_file::ALIGN_BOUNDARY_OFFSET;
 use solana_accounts_db::accounts_hash::AccountHash;
 use solana_accounts_db::{account_storage::meta::StoredMetaWriteVersion, u64_align};
-use solana_sdk::signer::Signer;
 use solana_sdk::{clock::Epoch, pubkey::Pubkey};
 use thiserror::Error;
 
 use crate::postgres_inserter_actor::PostgresInserterActor;
+
+// The amount of parallel processing account filesw
+const CHUNK_SIZE: usize = 1000;
 
 #[derive(Error, Debug)]
 pub enum ScanAccountsError {
@@ -102,7 +102,7 @@ impl AccountWithBalance {
     }
 }
 
-pub async fn scan_accounts(unarchived_snapshot_path: PathBuf) -> Result<()> {
+pub async fn scan_accounts(db_url: &str, unarchived_snapshot_path: PathBuf) -> Result<()> {
     let accounts_path = unarchived_snapshot_path.join("accounts");
 
     if !accounts_path.exists() {
@@ -122,7 +122,7 @@ pub async fn scan_accounts(unarchived_snapshot_path: PathBuf) -> Result<()> {
     let (completion_tx, completion_rx) = tokio::sync::oneshot::channel(); // Completion channel
 
     PostgresInserterActor::new(
-        "postgres://postgres:password@localhost:5432/bruteforce",
+        db_url,
         accounts_with_balances_rx,
         exit_rx,
         completion_tx, // Pass the completion signal
@@ -133,10 +133,9 @@ pub async fn scan_accounts(unarchived_snapshot_path: PathBuf) -> Result<()> {
         account_files.len()
     );
 
-    let chunk_size = 500;
     let processed_count = Arc::new(AtomicUsize::new(0));
 
-    for chunk in account_files.chunks(chunk_size) {
+    for chunk in account_files.chunks(CHUNK_SIZE) {
         let tasks: Vec<_> = chunk
             .iter()
             .map(|file_path| {
@@ -159,7 +158,7 @@ pub async fn scan_accounts(unarchived_snapshot_path: PathBuf) -> Result<()> {
             }
         }
 
-        processed_count.fetch_add(chunk_size, Ordering::Relaxed);
+        processed_count.fetch_add(CHUNK_SIZE, Ordering::Relaxed);
         let processed = processed_count.load(Ordering::Relaxed);
         info!("Processed {} / {} files", processed, account_files.len());
     }

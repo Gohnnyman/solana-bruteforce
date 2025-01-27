@@ -1,19 +1,16 @@
 use std::sync::Arc;
 
-use futures::SinkExt;
 use log::{debug, error, info};
-use solana_sdk::signer::Signer;
-use sqlx::{Pool, Postgres};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{ConnectOptions, Pool, Postgres};
 use thiserror::Error;
 use tokio::select;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::scan_accounts::AccountWithBalance;
 
 #[derive(Error, Debug)]
 pub enum ActorError {
-    #[error("Join error while processing files: {0}")]
-    JoinError(#[from] tokio::task::JoinError),
     #[error("SQLx Error: {0}")]
     SqlxError(#[from] sqlx::Error),
 }
@@ -21,7 +18,8 @@ pub enum ActorError {
 pub type Result<T> = std::result::Result<T, ActorError>;
 
 pub const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-pub const FLUSH_THRESHOLD: usize = 5_000;
+pub const FLUSH_THRESHOLD: usize = 10_000;
+pub const MAX_PSQL_CONNECTIONS: u32 = 10;
 
 pub struct PostgresInserterActor;
 
@@ -32,7 +30,16 @@ impl PostgresInserterActor {
         exit_signal: oneshot::Receiver<()>,
         completion_signal: oneshot::Sender<()>, // New completion signal
     ) -> Result<()> {
-        let pool = Arc::new(Mutex::new(Pool::<Postgres>::connect_lazy(url)?));
+        let pg_connection_options = url
+            .parse::<sqlx::postgres::PgConnectOptions>()?
+            .log_slow_statements(log::LevelFilter::Off, std::time::Duration::from_secs(10))
+            .log_statements(log::LevelFilter::Off);
+
+        let pool = PgPoolOptions::new()
+            .max_connections(MAX_PSQL_CONNECTIONS)
+            .connect_lazy_with(pg_connection_options);
+
+        let pool = Arc::new(pool);
 
         tokio::spawn(Self::run(
             accounts_rc,
@@ -46,7 +53,7 @@ impl PostgresInserterActor {
 
     async fn run(
         mut accounts_rc: mpsc::UnboundedReceiver<Vec<AccountWithBalance>>,
-        pool: Arc<Mutex<Pool<Postgres>>>,
+        pool: Arc<Pool<Postgres>>,
         mut exit_signal: oneshot::Receiver<()>,
         completion_signal: oneshot::Sender<()>, // New completion signal sender
     ) {
@@ -110,18 +117,54 @@ impl PostgresInserterActor {
     /// Flushes the accounts buffer into the database
     async fn flush(
         accounts_buffer: &[AccountWithBalance],
-        pool: Arc<Mutex<Pool<Postgres>>>,
+        pool: Arc<Pool<Postgres>>,
     ) -> Result<()> {
-        debug!(
+        info!(
             "Flushing {} accounts into the database...",
             accounts_buffer.len()
         );
-        Self::insert_accounts_into_db(accounts_buffer, pool).await
+
+        // Calculate the chunk size to ensure the number of chunks <= MAX_PSQL_CONNECTIONS
+        let chunk_size = (accounts_buffer.len() + MAX_PSQL_CONNECTIONS as usize - 1)
+            / MAX_PSQL_CONNECTIONS as usize;
+
+        // Split the accounts buffer into chunks
+        let data_chunks: Vec<Vec<AccountWithBalance>> = accounts_buffer
+            .chunks(chunk_size)
+            .map(|chunk| chunk.to_vec())
+            .collect();
+
+        // Use flush_data for parallel flushing
+        Self::flush_data(pool, data_chunks).await;
+
+        Ok(())
+    }
+
+    async fn flush_data(pool: Arc<Pool<Postgres>>, data_chunks: Vec<Vec<AccountWithBalance>>) {
+        let mut tasks = vec![];
+
+        for chunk in data_chunks {
+            let pool = pool.clone();
+            tasks.push(tokio::task::spawn(async move {
+                Self::insert_accounts_into_db(&chunk, pool.clone())
+                    .await
+                    .unwrap();
+            }));
+        }
+
+        error!("Tasks: {:?}", tasks.len());
+
+        // Wait for all tasks to complete
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        error!("All tasks completed!");
     }
 
     async fn insert_accounts_into_db(
         accounts_with_balances: &[AccountWithBalance],
-        pool: Arc<Mutex<Pool<Postgres>>>,
+        pool: Arc<Pool<Postgres>>,
     ) -> Result<()> {
         if accounts_with_balances.is_empty() {
             return Ok(());
@@ -137,8 +180,6 @@ impl PostgresInserterActor {
                 "Batch insert size too large".to_string(),
             )));
         }
-
-        let pool = pool.lock().await;
 
         let mut query_builder =
             String::from("INSERT INTO existing_accounts (account_pubkey, balance) VALUES ");
