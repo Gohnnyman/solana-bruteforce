@@ -27,6 +27,8 @@ use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::{Client, NoTls};
 
+use crate::postgres_inserter_actor::PostgresInserterActor;
+
 #[derive(Error, Debug)]
 pub enum ScanAccountsError {
     #[error("IO Error: {0}")]
@@ -41,6 +43,8 @@ pub enum ScanAccountsError {
     SqlxError(#[from] sqlx::Error),
     #[error("Join error while processing files: {0}")]
     JoinError(#[from] tokio::task::JoinError),
+    #[error("Postgres Inserter Actor Error: {0}")]
+    PostgresInserterActorError(#[from] crate::postgres_inserter_actor::ActorError),
 }
 
 pub type Result<T> = std::result::Result<T, ScanAccountsError>;
@@ -110,124 +114,76 @@ impl AccountWithBalance {
 pub async fn scan_accounts(unarchived_snapshot_path: PathBuf) -> Result<()> {
     let accounts_path = unarchived_snapshot_path.join("accounts");
 
-    // Check if the `accounts` directory exist
     if !accounts_path.exists() {
         return Err(ScanAccountsError::FolderAccountMissing);
     }
 
-    // Collect all files in the `accounts` directory
     let account_files: Vec<Arc<_>> = fs::read_dir(&accounts_path)?
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.path().is_file())
         .map(|entry| Arc::new(entry.path()))
         .collect();
 
-    // Create a connection pool
-    let pool = Arc::new(Mutex::new(Pool::<Postgres>::connect_lazy(
+    let (accounts_with_balances_tx, accounts_with_balances_rx) =
+        tokio::sync::mpsc::unbounded_channel();
+
+    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel(); // Completion channel
+
+    PostgresInserterActor::new(
         "postgres://postgres:password@localhost:5432/bruteforce",
-    )?));
+        accounts_with_balances_rx,
+        exit_rx,
+        completion_tx, // Pass the completion signal
+    )?;
 
     info!(
         "Starting to scan accounts (total files: {})...",
         account_files.len()
     );
 
-    let chunk_size = 500; // Number of files to process concurrently
-    let processed_count = Arc::new(AtomicUsize::new(0)); // Counter for processed files
+    let chunk_size = 500;
+    let processed_count = Arc::new(AtomicUsize::new(0));
 
-    // Process files in chunks
     for chunk in account_files.chunks(chunk_size) {
         let tasks: Vec<_> = chunk
             .iter()
             .map(|file_path| {
-                // let pool = pool.clone();
                 let file_path = file_path.clone();
-                tokio::spawn(async move {
-                    let result = scan_accounts_and_balances(file_path.as_ref());
-                    result
-                })
+                tokio::spawn(async move { scan_accounts_and_balances(file_path.as_ref()) })
             })
             .collect();
 
         let chunk_results = join_all(tasks).await;
 
-        let mut accounts_and_balances: HashSet<AccountWithBalance> = HashSet::new();
-
         for result in chunk_results {
-            // let result: HashSet<AccountWithBalance> = result??;
             match result {
                 Ok(inner_result) => {
-                    accounts_and_balances.extend(inner_result?);
+                    let vec = inner_result?.into_iter().collect::<Vec<_>>();
+                    accounts_with_balances_tx
+                        .send(vec)
+                        .expect("Failed to send accounts, receiver dropped");
                 }
-                Err(e) => {
-                    return Err(ScanAccountsError::JoinError(e));
-                }
+                Err(e) => return Err(ScanAccountsError::JoinError(e)),
             }
         }
 
-        // Insert the accounts into the database
-        insert_accounts_into_db(accounts_and_balances, pool.clone()).await?;
-
-        // Log progress update
         processed_count.fetch_add(chunk_size, Ordering::Relaxed);
         let processed = processed_count.load(Ordering::Relaxed);
         info!("Processed {} / {} files", processed, account_files.len());
     }
 
+    // Signal the actor to exit
+    exit_tx
+        .send(())
+        .expect("Failed to send exit signal, receiver dropped");
+
+    // Wait for the actor to confirm completion
+    completion_rx
+        .await
+        .expect("Failed to receive completion signal");
+
     info!("Finished scanning all accounts.");
-
-    Ok(())
-}
-
-async fn insert_accounts_into_db(
-    accounts_with_balances: HashSet<AccountWithBalance>,
-    pool: Arc<Mutex<Pool<Postgres>>>,
-) -> Result<()> {
-    // Batch insert accounts into the database
-    let pool = pool.lock().await;
-
-    // Prepare a batch insert query
-
-    let accounts = accounts_with_balances.into_iter().collect::<Vec<_>>();
-
-    for chunk in accounts.chunks(10000) {
-        let mut query_builder =
-            String::from("INSERT INTO existing_accounts (account_pubkey, balance) VALUES ");
-        // let mut params: Vec<(String, i64)> = Vec::new();
-
-        // for account_with_balance in accounts_with_balances {
-        //     // Collect parameters for batch insertion
-        //     params.push((
-        //         account_with_balance.get_pubkey(),
-        //         account_with_balance.get_lamports(),
-        //     ));
-        // }
-
-        // Create a string with placeholders for each row
-        for (i, _) in chunk.iter().enumerate() {
-            if i > 0 {
-                query_builder.push(',');
-            }
-            query_builder.push_str(&format!("(${}, ${})", i * 2 + 1, i * 2 + 2));
-        }
-
-        query_builder.push_str(" ON CONFLICT (account_pubkey) DO NOTHING");
-
-        // Create a SQLx query and bind all parameters
-        let mut query = sqlx::query(&query_builder);
-
-        for AccountWithBalance { pubkey, lamports } in chunk {
-            query = query.bind(pubkey).bind(lamports);
-        }
-
-        // Execute the batch query
-        query
-            .execute(&*pool)
-            .await
-            .map_err(ScanAccountsError::SqlxError)?;
-    }
-
-    error!("Batch insert completed!");
 
     Ok(())
 }
