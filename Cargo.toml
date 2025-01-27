@@ -10,15 +10,7 @@ clap = "2.33.3"
 log = "0.4.25"
 
 solana-sdk = "2.1.10"
-solana-ledger = "2.1.10"
-solana-runtime = "2.1.10"
 solana-accounts-db = "2.1.10"
-solana-measure = "2.1.10"
-solana-rpc = "2.1.10"
-solana-core = "2.1.10"
-solana-unified-scheduler-pool = "2.1.10"
-solana-clap-utils = "2.1.10"
-solana-lattice-hash = "2.1.10"
 
 
 crossbeam-channel = "0.5.14"
@@ -35,4 +27,3 @@ sqlx = { version = "0.8.3", features = [
 rayon = "1.10.0"
 num_cpus = "1.16.0"
 futures = "0.3.31"
-tokio-postgres = "0.7.12"

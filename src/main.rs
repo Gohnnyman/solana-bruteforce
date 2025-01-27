@@ -1,26 +1,11 @@
 use anyhow::Result;
 use core::panic;
 use log::info;
-use std::{
-    fmt::Display,
-    path::{Path, PathBuf},
-    process::exit,
-    str::FromStr,
-    sync::Arc,
-};
+use solana_bruteforce::scan_accounts;
+use std::{fmt::Display, str::FromStr};
 
-use clap::{
-    crate_description, crate_name, value_t_or_exit, App, AppSettings, Arg, ArgMatches, SubCommand,
-};
-use solana_accounts_db::hardened_unpack::open_genesis_config;
-use solana_bruteforce::{
-    args::{self, parse_process_options},
-    ledger_path::canonicalize_ledger_path,
-    ledger_utils::{get_access_type, load_and_process_ledger, open_blockstore},
-    scan_accounts,
-};
-use solana_core::validator::BlockVerificationMethod;
-use solana_sdk::{genesis_config::GenesisConfig, pubkey::Pubkey, signature::read_keypair_file};
+use clap::{crate_description, crate_name, App, AppSettings, Arg, SubCommand};
+use solana_sdk::{pubkey::Pubkey, signature::read_keypair_file};
 
 fn is_parsable_generic<U, T>(string: T) -> Result<(), String>
 where
@@ -73,10 +58,6 @@ async fn main() -> Result<()> {
         .filter_level(log::LevelFilter::Info) // Set default log level to `info`
         .parse_default_env()
         .init();
-
-    let load_genesis_config_arg = args::load_genesis_arg();
-    let accounts_db_config_args = args::accounts_db_args();
-    let snapshot_config_args = args::snapshot_args();
 
     let accounts_db_test_hash_calculation_arg = Arg::with_name("accounts_db_test_hash_calculation")
         .long("accounts-db-test-hash-calculation")
@@ -137,13 +118,6 @@ async fn main() -> Result<()> {
     //     .takes_value(true)
     //     .default_value(SnapshotVersion::default().into())
     //     .help("Output snapshot version");
-    let debug_key_arg = Arg::with_name("debug_key")
-        .long("debug-key")
-        .validator(is_pubkey)
-        .value_name("ADDRESS")
-        .multiple(true)
-        .takes_value(true)
-        .help("Log when transactions are processed that reference the given key(s).");
 
     let geyser_plugin_args = Arg::with_name("geyser_plugin_config")
         .long("geyser-plugin-config")
@@ -219,15 +193,6 @@ async fn main() -> Result<()> {
                 ),
         )
         .arg(
-            Arg::with_name("block_verification_method")
-                .long("block-verification-method")
-                .value_name("METHOD")
-                .takes_value(true)
-                .possible_values(BlockVerificationMethod::cli_names())
-                .global(true)
-                .help(BlockVerificationMethod::cli_message()),
-        )
-        .arg(
             Arg::with_name("output_format")
                 .long("output")
                 .value_name("FORMAT")
@@ -251,9 +216,6 @@ async fn main() -> Result<()> {
         .subcommand(
             SubCommand::with_name("accounts")
                 .about("Print account stats and contents after processing the ledger")
-                .arg(&load_genesis_config_arg)
-                .args(&accounts_db_config_args)
-                .args(&snapshot_config_args)
                 // .arg(&halt_at_slot_arg)
                 // .arg(&hard_forks_arg)
                 .arg(&geyser_plugin_args)
@@ -312,26 +274,11 @@ async fn main() -> Result<()> {
         )
         .get_matches();
 
-    let ledger_path = PathBuf::from(value_t_or_exit!(matches, "ledger_path", String));
-    let ledger_path = canonicalize_ledger_path(&ledger_path);
+    // let ledger_path = PathBuf::from(value_t_or_exit!(matches, "ledger_path", String));
+    // let ledger_path = canonicalize_ledger_path(&ledger_path);
 
     match matches.subcommand() {
-        ("accounts", Some(arg_matches)) => {
-            let process_options = parse_process_options(&ledger_path, arg_matches);
-            let genesis_config = open_genesis_config_by(&ledger_path, arg_matches);
-            let blockstore =
-                open_blockstore(&ledger_path, arg_matches, get_access_type(&process_options));
-
-            load_and_process_ledger(
-                arg_matches,
-                &genesis_config,
-                Arc::new(blockstore),
-                process_options,
-                None,
-            )?;
-        }
-
-        ("test", Some(_arg_matches)) => {
+        ("scan_accounts", Some(_arg_matches)) => {
             info!("Running test");
             let path = _arg_matches.value_of("path").unwrap();
             scan_accounts::scan_accounts(path.into()).await?;
@@ -341,14 +288,4 @@ async fn main() -> Result<()> {
     };
 
     Ok(())
-}
-
-pub fn open_genesis_config_by(ledger_path: &Path, matches: &ArgMatches<'_>) -> GenesisConfig {
-    let max_genesis_archive_unpacked_size =
-        value_t_or_exit!(matches, "max_genesis_archive_unpacked_size", u64);
-
-    open_genesis_config(ledger_path, max_genesis_archive_unpacked_size).unwrap_or_else(|err| {
-        eprintln!("Exiting. Failed to open genesis config: {err}");
-        exit(1);
-    })
 }

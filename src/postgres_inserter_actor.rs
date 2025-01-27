@@ -1,32 +1,12 @@
-use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::{hash, mem};
 
-use futures::future::join_all;
-use futures::{pin_mut, SinkExt};
+use futures::SinkExt;
 use log::{debug, error, info};
-use memmap2::Mmap;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use rayon::ThreadPoolBuilder;
-use serde::{Deserialize, Serialize};
-use solana_accounts_db::accounts_file::ALIGN_BOUNDARY_OFFSET;
-use solana_accounts_db::accounts_hash::AccountHash;
-use solana_accounts_db::{account_storage::meta::StoredMetaWriteVersion, u64_align};
-use solana_runtime::accounts_background_service;
-use solana_sdk::blake3::Hash;
-use solana_sdk::lamports;
 use solana_sdk::signer::Signer;
-use solana_sdk::{clock::Epoch, pubkey::Pubkey};
-use sqlx::{query, Pool, Postgres};
+use sqlx::{Pool, Postgres};
 use thiserror::Error;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio_postgres::binary_copy::BinaryCopyInWriter;
-use tokio_postgres::types::{ToSql, Type};
-use tokio_postgres::{Client, NoTls};
 
 use crate::scan_accounts::AccountWithBalance;
 
