@@ -19,7 +19,10 @@ pub type Result<T> = std::result::Result<T, ActorError>;
 
 pub const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 pub const FLUSH_THRESHOLD: usize = 10_000;
-pub const MAX_PSQL_CONNECTIONS: u32 = 10;
+
+// Maximum number of parallel connections to the database
+// Set to 1 due to deadlock issues with parallel connections
+pub const MAX_PSQL_CONNECTIONS: u32 = 1;
 
 pub struct PostgresInserterActor;
 
@@ -55,7 +58,7 @@ impl PostgresInserterActor {
         mut accounts_rc: mpsc::UnboundedReceiver<Vec<AccountWithBalance>>,
         pool: Arc<Pool<Postgres>>,
         mut exit_signal: oneshot::Receiver<()>,
-        completion_signal: oneshot::Sender<()>, // New completion signal sender
+        completion_signal: oneshot::Sender<()>,
     ) {
         let mut accounts_buffer: Vec<AccountWithBalance> = Vec::new();
         let mut flush_interval = tokio::time::interval(FLUSH_TIMEOUT);
@@ -69,11 +72,15 @@ impl PostgresInserterActor {
                     if accounts_buffer.len() >= FLUSH_THRESHOLD {
                         let to_flush = accounts_buffer.split_off(accounts_buffer.len() - FLUSH_THRESHOLD);
 
+
                         if let Err(e) = Self::flush(&to_flush, pool.clone()).await {
                             error!("Failed to flush accounts: {:?}", e);
                         }
 
-                        flush_interval = tokio::time::interval(FLUSH_TIMEOUT); // Reset interval
+
+                        // Reset the flush interval
+                        flush_interval = tokio::time::interval(FLUSH_TIMEOUT);
+                        flush_interval.tick().await; // Ensure the interval starts fresh
                     }
                 }
 
@@ -87,7 +94,10 @@ impl PostgresInserterActor {
                         }
 
                         accounts_buffer.clear();
-                        flush_interval = tokio::time::interval(FLUSH_TIMEOUT); // Reset interval
+
+                        // Reset the flush interval
+                        flush_interval = tokio::time::interval(FLUSH_TIMEOUT);
+                        flush_interval.tick().await; // Ensure the interval starts fresh
                     }
                 }
 
@@ -95,10 +105,25 @@ impl PostgresInserterActor {
                 _ = &mut exit_signal => {
                     info!("Exit signal received. Flushing remaining accounts and exiting...");
 
-                    if !accounts_buffer.is_empty() {
-                        if let Err(e) = Self::flush(accounts_buffer.as_slice(), pool.clone()).await {
+                    let amount_of_accounts_to_flush = accounts_buffer.len();
+                    let mut flushed = 0;
+
+                    while !accounts_buffer.is_empty() {
+                        let to_flush = if accounts_buffer.len() > FLUSH_THRESHOLD {
+                            // Split off the last FLUSH_THRESHOLD accounts for flushing
+                            accounts_buffer.split_off(accounts_buffer.len() - FLUSH_THRESHOLD)
+                        } else {
+                            // Flush all remaining accounts if below the threshold
+                            accounts_buffer.split_off(0)
+                        };
+
+                        flushed += to_flush.len();
+
+                        if let Err(e) = Self::flush(&to_flush, pool.clone()).await {
                             error!("Failed to flush accounts during exit: {:?}", e);
                         }
+
+                        info!("Flushed {} / {} of reamaiming accounts...", flushed, amount_of_accounts_to_flush);
                     }
 
                     break; // Exit the loop after flushing
@@ -119,7 +144,7 @@ impl PostgresInserterActor {
         accounts_buffer: &[AccountWithBalance],
         pool: Arc<Pool<Postgres>>,
     ) -> Result<()> {
-        info!(
+        debug!(
             "Flushing {} accounts into the database...",
             accounts_buffer.len()
         );
@@ -152,14 +177,10 @@ impl PostgresInserterActor {
             }));
         }
 
-        error!("Tasks: {:?}", tasks.len());
-
         // Wait for all tasks to complete
         for task in tasks {
             task.await.unwrap();
         }
-
-        error!("All tasks completed!");
     }
 
     async fn insert_accounts_into_db(

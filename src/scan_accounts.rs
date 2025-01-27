@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::{hash, mem};
 
-use futures::future::join_all;
 use log::{debug, error, info};
 use memmap2::Mmap;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use solana_accounts_db::accounts_file::ALIGN_BOUNDARY_OFFSET;
 use solana_accounts_db::accounts_hash::AccountHash;
@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use crate::postgres_inserter_actor::PostgresInserterActor;
 
-// The amount of parallel processing account filesw
+// The amount of account files to process in a single chunk
 const CHUNK_SIZE: usize = 1000;
 
 #[derive(Error, Debug)]
@@ -135,29 +135,37 @@ pub async fn scan_accounts(db_url: &str, unarchived_snapshot_path: PathBuf) -> R
 
     let processed_count = Arc::new(AtomicUsize::new(0));
 
+    let num_threads = num_cpus::get();
+    error!("Number of threads: {}", num_threads);
+
+    // Create a custom Rayon thread pool with the specified number of CPUs
+    let thread_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .expect("Failed to create Rayon thread pool");
+
     for chunk in account_files.chunks(CHUNK_SIZE) {
-        let tasks: Vec<_> = chunk
-            .iter()
-            .map(|file_path| {
+        // Use the custom thread pool to process the chunk
+        thread_pool.install(|| {
+            chunk.par_iter().for_each(|file_path| {
+                // Clone the file_path for thread safety
                 let file_path = file_path.clone();
-                tokio::spawn(async move { scan_accounts_and_balances(file_path.as_ref()) })
-            })
-            .collect();
+                // Call the function to scan accounts and balances
+                let result = scan_accounts_and_balances(file_path.as_ref());
 
-        let chunk_results = join_all(tasks).await;
-
-        for result in chunk_results {
-            match result {
-                Ok(inner_result) => {
-                    let vec = inner_result?.into_iter().collect::<Vec<_>>();
-                    accounts_with_balances_tx
-                        .send(vec)
-                        .expect("Failed to send accounts, receiver dropped");
+                match result {
+                    Ok(inner_result) => {
+                        let vec = inner_result.into_iter().collect::<Vec<_>>();
+                        accounts_with_balances_tx
+                            .send(vec)
+                            .expect("Failed to send accounts, receiver dropped");
+                    }
+                    Err(e) => panic!("Error: {:?}", e),
                 }
-                Err(e) => return Err(ScanAccountsError::JoinError(e)),
-            }
-        }
+            });
+        });
 
+        // Update progress
         processed_count.fetch_add(CHUNK_SIZE, Ordering::Relaxed);
         let processed = processed_count.load(Ordering::Relaxed);
         info!("Processed {} / {} files", processed, account_files.len());
