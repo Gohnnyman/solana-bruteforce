@@ -34,8 +34,8 @@ pub enum ScanAccountsError {
     SqlxError(#[from] sqlx::Error),
     #[error("Join error while processing files: {0}")]
     JoinError(#[from] tokio::task::JoinError),
-    #[error("Postgres Inserter Actor Error: {0}")]
-    PostgresInserterActorError(#[from] crate::postgres_actor::ActorError),
+    #[error("Postgres Actor Error: {0}")]
+    PostgresActorError(#[from] crate::postgres_actor::ActorError),
 }
 
 pub type Result<T> = std::result::Result<T, ScanAccountsError>;
@@ -53,7 +53,7 @@ pub struct StoredMeta {
     pub write_version_obsolete: StoredMetaWriteVersion,
     pub data_len: u64,
     /// key for the account
-    pub pubkey: Pubkey,
+    pub public_key: Pubkey,
 }
 
 /// This struct will be backed by mmaped and snapshotted data files.
@@ -73,26 +73,29 @@ pub struct AccountMeta {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountWithBalance {
-    pub pubkey: String,
+    pub public_key: String,
     pub lamports: i64,
 }
 
 // We only need to hash the pubkey
 impl hash::Hash for AccountWithBalance {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        self.pubkey.hash(state);
+        self.public_key.hash(state);
     }
 }
 
 impl AccountWithBalance {
-    pub fn new(pubkey: Pubkey, lamports: u64) -> Self {
-        let pubkey = pubkey.to_string();
+    pub fn new(public_key: Pubkey, lamports: u64) -> Self {
+        let public_key = public_key.to_string();
         let lamports = lamports.try_into().unwrap_or(-1);
-        Self { pubkey, lamports }
+        Self {
+            public_key,
+            lamports,
+        }
     }
 
     pub fn get_pubkey(&self) -> String {
-        self.pubkey.clone()
+        self.public_key.clone()
     }
 
     /// Convert lamports to i64
@@ -116,17 +119,10 @@ pub async fn scan_accounts(db_url: &str, unarchived_snapshot_path: PathBuf) -> R
         .collect();
 
     let (postgres_message_tx, postgres_messages_rx) = tokio::sync::mpsc::unbounded_channel();
-
     let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
     let (completion_tx, completion_rx) = tokio::sync::oneshot::channel(); // Completion channel
 
-    PostgresActor::new(
-        db_url,
-        postgres_messages_rx,
-        exit_rx,
-        completion_tx, // Pass the completion signal
-    )
-    .await?;
+    PostgresActor::new(db_url, postgres_messages_rx, exit_rx, completion_tx).await?;
 
     info!(
         "Starting to scan accounts (total files: {})...",
@@ -231,9 +227,9 @@ fn scan_accounts_and_balances(file_path: &PathBuf) -> Result<HashSet<AccountWith
         };
 
         // Check whether pubkey is on curve and insert the account into the set
-        if stored_meta.pubkey.is_on_curve() {
+        if stored_meta.public_key.is_on_curve() {
             accounts_with_balances.insert(AccountWithBalance::new(
-                stored_meta.pubkey,
+                stored_meta.public_key,
                 account_meta.lamports,
             ));
         }

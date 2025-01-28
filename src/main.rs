@@ -1,8 +1,12 @@
 use anyhow::Result;
-use clap::{crate_description, crate_name};
+use clap::{crate_description, crate_name, ArgMatches};
 use core::panic;
 use log::info;
-use solana_bruteforce::{bruteforce::run_bruteforce, config::load_config, scan_accounts};
+use solana_bruteforce::{
+    bruteforce::run_bruteforce,
+    config::{load_config, AppConfig},
+    scan_accounts,
+};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
@@ -92,6 +96,8 @@ async fn main() -> Result<()> {
     // Load configuration from the specified path
     let config = load_config(config_path);
 
+    let db_url = construct_db_url(&matches, &config);
+
     // Match the subcommand
     match matches.subcommand() {
         Some(("scan_accounts", sub_matches)) => {
@@ -103,47 +109,49 @@ async fn main() -> Result<()> {
                 .expect("Snapshot path is required")
                 .to_string();
 
-            let db_host = matches
-                .get_one::<String>("db_host")
-                .cloned()
-                .unwrap_or(config.get_database_host());
-
-            let db_port: u16 = matches
-                .get_one::<String>("db_port")
-                .cloned()
-                .map(|v| v.parse().expect("Should be a valid port number"))
-                .unwrap_or(config.get_database_port());
-
-            let db_user = matches
-                .get_one::<String>("db_user")
-                .cloned()
-                .unwrap_or(config.get_database_user());
-
-            let db_password = matches
-                .get_one::<String>("db_password")
-                .cloned()
-                .unwrap_or(config.get_database_password());
-
-            let db_name = matches
-                .get_one::<String>("db_name")
-                .cloned()
-                .unwrap_or(config.get_database_name());
-
-            // Construct the database URL
-            let db_url = format!(
-                "postgres://{}:{}@{}:{}/{}",
-                db_user, db_password, db_host, db_port, db_name
-            );
-
             // Run the scan_accounts function
             scan_accounts::scan_accounts(&db_url, path.into()).await?;
         }
         Some(("start", _)) => {
             info!("Running default start behavior...");
-            run_bruteforce().await?;
+            run_bruteforce(&db_url).await?;
         }
         _ => panic!("Unrecognized subcommand"), // Fallback for unknown subcommands
     };
 
     Ok(())
+}
+
+fn construct_db_url(matches: &ArgMatches, config: &AppConfig) -> String {
+    let db_host = matches
+        .get_one::<String>("db_host")
+        .cloned()
+        .unwrap_or(config.get_database_host());
+
+    let db_port: u16 = matches
+        .get_one::<String>("db_port")
+        .cloned()
+        .map(|v| v.parse().expect("Should be a valid port number"))
+        .unwrap_or(config.get_database_port());
+
+    let db_user = matches
+        .get_one::<String>("db_user")
+        .cloned()
+        .unwrap_or(config.get_database_user());
+
+    let db_password = matches
+        .get_one::<String>("db_password")
+        .cloned()
+        .unwrap_or(config.get_database_password());
+
+    let db_name = matches
+        .get_one::<String>("db_name")
+        .cloned()
+        .unwrap_or(config.get_database_name());
+
+    // Construct the database URL
+    format!(
+        "postgres://{}:{}@{}:{}/{}",
+        db_user, db_password, db_host, db_port, db_name
+    )
 }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use log::{debug, error, info};
 use sqlx::postgres::PgPoolOptions;
+use sqlx::Row;
 use sqlx::{ConnectOptions, Pool, Postgres};
 use thiserror::Error;
 use tokio::select;
@@ -27,6 +28,14 @@ pub const MAX_PSQL_CONNECTIONS: u32 = 1;
 
 pub enum PostgresMessage {
     InsertAccountsButch(Vec<AccountWithBalance>),
+    CheckAccountsButch(Vec<AccountWithPrivateKey>),
+}
+
+// TODO: move into bruteforce.rs
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountWithPrivateKey {
+    pub public_key: String,
+    pub private_key: [u8; 32],
 }
 
 pub struct PostgresActor {
@@ -40,7 +49,7 @@ impl PostgresActor {
         url: &str,
         accounts_rc: mpsc::UnboundedReceiver<PostgresMessage>,
         exit_signal: oneshot::Receiver<()>,
-        completion_signal: oneshot::Sender<()>, // New completion signal
+        completion_signal: oneshot::Sender<()>,
     ) -> Result<()> {
         let pg_connection_options = url
             .parse::<sqlx::postgres::PgConnectOptions>()?
@@ -65,6 +74,105 @@ impl PostgresActor {
         Ok(())
     }
 
+    async fn check_accounts_exist(
+        pool: Arc<Pool<Postgres>>,
+        pubkeys: &[AccountWithPrivateKey],
+    ) -> Result<bool> {
+        // Extract public keys as a vector of strings
+        let pubkeys_vec: Vec<String> = pubkeys
+            .iter()
+            .map(|account| account.public_key.clone())
+            .collect();
+
+        // SQL query to check if any pubkeys exist in the database
+        let query = "
+            SELECT EXISTS (
+                SELECT 1
+                FROM existing_accounts
+                WHERE account_pubkey = ANY($1)
+            )
+        ";
+
+        // Execute the query and fetch the result
+        let exists: bool = sqlx::query_scalar(query)
+            .bind(&pubkeys_vec)
+            .fetch_one(&*pool)
+            .await?;
+
+        Ok(exists)
+    }
+
+    async fn insert_found_accounts(
+        pubkeys_with_keys: &[AccountWithPrivateKey],
+        pool: Arc<Pool<Postgres>>,
+    ) -> Result<()> {
+        // Extract public keys for the query
+        let pubkeys: Vec<String> = pubkeys_with_keys
+            .iter()
+            .map(|account| account.public_key.clone())
+            .collect();
+
+        // Query the database to find matching accounts
+        let query = r#"
+            SELECT account_pubkey
+            FROM existing_accounts
+            WHERE account_pubkey = ANY($1)
+        "#;
+
+        let rows = sqlx::query(query).bind(&pubkeys).fetch_all(&*pool).await?;
+
+        if rows.is_empty() {
+            info!("No matching accounts found to insert into found_accounts.");
+            return Ok(());
+        }
+
+        // Collect the matching accounts and their private keys
+        let found_accounts: Vec<AccountWithPrivateKey> = rows
+            .iter()
+            .filter_map(|row| {
+                let public_key: String = row.get("account_pubkey");
+
+                // Find the corresponding private key from the input list
+                pubkeys_with_keys
+                    .iter()
+                    .find(|acc| acc.public_key == public_key)
+                    .cloned()
+            })
+            .collect();
+
+        if found_accounts.is_empty() {
+            info!("No accounts with private keys to insert.");
+            return Ok(());
+        }
+
+        // Insert the found accounts into the `found_accounts` table
+        let mut query_builder =
+            String::from("INSERT INTO found_accounts (account_pubkey, private_key) VALUES ");
+        for (i, _) in found_accounts.iter().enumerate() {
+            if i > 0 {
+                query_builder.push(',');
+            }
+            query_builder.push_str(&format!("(${}, ${})", i * 2 + 1, i * 2 + 2));
+        }
+        query_builder.push_str(" ON CONFLICT (account_pubkey) DO NOTHING");
+
+        let mut query = sqlx::query(&query_builder);
+        for account in found_accounts {
+            query = query.bind(account.public_key).bind(
+                account
+                    .private_key
+                    .into_iter()
+                    .map(|v| v as i32)
+                    .collect::<Vec<i32>>(),
+            );
+        }
+
+        query.execute(&*pool).await.map_err(ActorError::SqlxError)?;
+
+        info!("Inserted found accounts into the found_accounts table.");
+        Ok(())
+    }
+
     async fn handle_message(&mut self, message: PostgresMessage) {
         match message {
             PostgresMessage::InsertAccountsButch(accounts) => {
@@ -83,6 +191,30 @@ impl PostgresActor {
                 // Reset the flush interval
                 self.flush_interval = tokio::time::interval(FLUSH_TIMEOUT);
                 self.flush_interval.tick().await; // Ensure the interval starts fresh
+            }
+            PostgresMessage::CheckAccountsButch(accounts_with_private_keys) => {
+                // Check if any pubkeys exist in the database
+                match Self::check_accounts_exist(self.pool.clone(), &accounts_with_private_keys)
+                    .await
+                {
+                    Ok(exists) => {
+                        if exists {
+                            info!("At least one of the provided accounts exists in the database.");
+                            // Fetch the accounts that exist in the database and insert them into the found_accounts table
+                            if let Err(e) = Self::insert_found_accounts(
+                                &accounts_with_private_keys,
+                                self.pool.clone(),
+                            )
+                            .await
+                            {
+                                error!("Failed to insert found accounts into found_accounts table: {:?}, data: {:#?}", e, accounts_with_private_keys);
+                            }
+                        } else {
+                            info!("None of the provided accounts exist in the database.");
+                        }
+                    }
+                    Err(e) => error!("Failed to check accounts: {:?}", e),
+                }
             }
         }
     }
@@ -236,7 +368,7 @@ impl PostgresActor {
         let mut query = sqlx::query(&query_builder);
 
         for account in accounts_with_balances {
-            query = query.bind(&account.pubkey).bind(account.lamports);
+            query = query.bind(&account.public_key).bind(account.lamports);
         }
 
         query.execute(&*pool).await.map_err(ActorError::SqlxError)?;
