@@ -1,3 +1,4 @@
+pub mod bruteforce;
 pub mod config;
-pub mod postgres_inserter_actor;
+pub mod postgres_actor;
 pub mod scan_accounts;

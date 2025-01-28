@@ -6,6 +6,7 @@ use sqlx::{ConnectOptions, Pool, Postgres};
 use thiserror::Error;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Interval;
 
 use crate::scan_accounts::AccountWithBalance;
 
@@ -24,12 +25,20 @@ pub const FLUSH_THRESHOLD: usize = 10_000;
 // Set to 1 due to deadlock issues with parallel connections
 pub const MAX_PSQL_CONNECTIONS: u32 = 1;
 
-pub struct PostgresInserterActor;
+pub enum PostgresMessage {
+    InsertAccountsButch(Vec<AccountWithBalance>),
+}
 
-impl PostgresInserterActor {
-    pub fn new(
+pub struct PostgresActor {
+    pool: Arc<Pool<Postgres>>,
+    accounts_buffer: Vec<AccountWithBalance>,
+    flush_interval: Interval,
+}
+
+impl PostgresActor {
+    pub async fn new(
         url: &str,
-        accounts_rc: mpsc::UnboundedReceiver<Vec<AccountWithBalance>>,
+        accounts_rc: mpsc::UnboundedReceiver<PostgresMessage>,
         exit_signal: oneshot::Receiver<()>,
         completion_signal: oneshot::Sender<()>, // New completion signal
     ) -> Result<()> {
@@ -40,23 +49,47 @@ impl PostgresInserterActor {
 
         let pool = PgPoolOptions::new()
             .max_connections(MAX_PSQL_CONNECTIONS)
-            .connect_lazy_with(pg_connection_options);
+            .connect_with(pg_connection_options)
+            .await?;
 
         let pool = Arc::new(pool);
 
-        tokio::spawn(Self::run(
-            accounts_rc,
-            pool.clone(),
-            exit_signal,
-            completion_signal,
-        ));
+        let actor = PostgresActor {
+            pool,
+            accounts_buffer: Vec::new(),
+            flush_interval: tokio::time::interval(FLUSH_TIMEOUT),
+        };
+
+        tokio::spawn(actor.run(accounts_rc, exit_signal, completion_signal));
 
         Ok(())
     }
 
+    async fn handle_message(&mut self, message: PostgresMessage) {
+        match message {
+            PostgresMessage::InsertAccountsButch(accounts) => {
+                self.accounts_buffer.extend(accounts);
+
+                if self.accounts_buffer.len() >= FLUSH_THRESHOLD {
+                    let to_flush = self
+                        .accounts_buffer
+                        .split_off(self.accounts_buffer.len() - FLUSH_THRESHOLD);
+
+                    if let Err(e) = Self::flush(&to_flush, self.pool.clone()).await {
+                        error!("Failed to flush accounts: {:?}", e);
+                    }
+                }
+
+                // Reset the flush interval
+                self.flush_interval = tokio::time::interval(FLUSH_TIMEOUT);
+                self.flush_interval.tick().await; // Ensure the interval starts fresh
+            }
+        }
+    }
+
     async fn run(
-        mut accounts_rc: mpsc::UnboundedReceiver<Vec<AccountWithBalance>>,
-        pool: Arc<Pool<Postgres>>,
+        mut self,
+        mut messages_rc: mpsc::UnboundedReceiver<PostgresMessage>,
         mut exit_signal: oneshot::Receiver<()>,
         completion_signal: oneshot::Sender<()>,
     ) {
@@ -66,22 +99,8 @@ impl PostgresInserterActor {
         loop {
             select! {
                 // Handle receiving new accounts
-                Some(new_accounts) = accounts_rc.recv() => {
-                    accounts_buffer.extend(new_accounts);
-
-                    if accounts_buffer.len() >= FLUSH_THRESHOLD {
-                        let to_flush = accounts_buffer.split_off(accounts_buffer.len() - FLUSH_THRESHOLD);
-
-
-                        if let Err(e) = Self::flush(&to_flush, pool.clone()).await {
-                            error!("Failed to flush accounts: {:?}", e);
-                        }
-
-
-                        // Reset the flush interval
-                        flush_interval = tokio::time::interval(FLUSH_TIMEOUT);
-                        flush_interval.tick().await; // Ensure the interval starts fresh
-                    }
+                Some(message) = messages_rc.recv() => {
+                    self.handle_message(message).await;
                 }
 
                 // Handle timeout-based flushing
@@ -89,7 +108,7 @@ impl PostgresInserterActor {
                     if !accounts_buffer.is_empty() {
                         let to_flush = accounts_buffer.as_slice();
 
-                        if let Err(e) = Self::flush(to_flush, pool.clone()).await {
+                        if let Err(e) = Self::flush(to_flush, self.pool.clone()).await {
                             error!("Failed to flush accounts on timeout: {:?}", e);
                         }
 
@@ -119,7 +138,7 @@ impl PostgresInserterActor {
 
                         flushed += to_flush.len();
 
-                        if let Err(e) = Self::flush(&to_flush, pool.clone()).await {
+                        if let Err(e) = Self::flush(&to_flush, self.pool.clone()).await {
                             error!("Failed to flush accounts during exit: {:?}", e);
                         }
 

@@ -15,7 +15,7 @@ use solana_accounts_db::{account_storage::meta::StoredMetaWriteVersion, u64_alig
 use solana_sdk::{clock::Epoch, pubkey::Pubkey};
 use thiserror::Error;
 
-use crate::postgres_inserter_actor::PostgresInserterActor;
+use crate::postgres_actor::{PostgresActor, PostgresMessage};
 
 // The amount of account files to process in a single chunk
 const CHUNK_SIZE: usize = 1000;
@@ -35,7 +35,7 @@ pub enum ScanAccountsError {
     #[error("Join error while processing files: {0}")]
     JoinError(#[from] tokio::task::JoinError),
     #[error("Postgres Inserter Actor Error: {0}")]
-    PostgresInserterActorError(#[from] crate::postgres_inserter_actor::ActorError),
+    PostgresInserterActorError(#[from] crate::postgres_actor::ActorError),
 }
 
 pub type Result<T> = std::result::Result<T, ScanAccountsError>;
@@ -115,18 +115,18 @@ pub async fn scan_accounts(db_url: &str, unarchived_snapshot_path: PathBuf) -> R
         .map(|entry| Arc::new(entry.path()))
         .collect();
 
-    let (accounts_with_balances_tx, accounts_with_balances_rx) =
-        tokio::sync::mpsc::unbounded_channel();
+    let (postgres_message_tx, postgres_messages_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
     let (completion_tx, completion_rx) = tokio::sync::oneshot::channel(); // Completion channel
 
-    PostgresInserterActor::new(
+    PostgresActor::new(
         db_url,
-        accounts_with_balances_rx,
+        postgres_messages_rx,
         exit_rx,
         completion_tx, // Pass the completion signal
-    )?;
+    )
+    .await?;
 
     info!(
         "Starting to scan accounts (total files: {})...",
@@ -136,7 +136,7 @@ pub async fn scan_accounts(db_url: &str, unarchived_snapshot_path: PathBuf) -> R
     let processed_count = Arc::new(AtomicUsize::new(0));
 
     let num_threads = num_cpus::get();
-    error!("Number of threads: {}", num_threads);
+    info!("Number of threads: {}", num_threads);
 
     // Create a custom Rayon thread pool with the specified number of CPUs
     let thread_pool = rayon::ThreadPoolBuilder::new()
@@ -156,8 +156,8 @@ pub async fn scan_accounts(db_url: &str, unarchived_snapshot_path: PathBuf) -> R
                 match result {
                     Ok(inner_result) => {
                         let vec = inner_result.into_iter().collect::<Vec<_>>();
-                        accounts_with_balances_tx
-                            .send(vec)
+                        postgres_message_tx
+                            .send(PostgresMessage::InsertAccountsButch(vec))
                             .expect("Failed to send accounts, receiver dropped");
                     }
                     Err(e) => panic!("Error: {:?}", e),
