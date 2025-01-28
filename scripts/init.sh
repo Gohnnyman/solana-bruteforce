@@ -94,17 +94,22 @@ init_docker() {
     echo "Waiting for PostgreSQL to initialize..."
     sleep 5
 
-    # Create the table in the database
-    echo "Creating table 'existing_accounts' in the database '$POSTGRES_DB'..."
-    docker exec -i $CONTAINER_NAME psql -U $POSTGRES_USER -d $POSTGRES_DB <<EOF
-CREATE TABLE IF NOT EXISTS existing_accounts (
-    id SERIAL PRIMARY KEY,
-    account_pubkey VARCHAR(44) UNIQUE NOT NULL,
-    balance BIGINT NOT NULL
-);
-EOF
+     # Check if init.sql exists
+    local init_sql="init.sql"
+    if [ ! -f "$init_sql" ]; then
+        echo "Error: $init_sql file not found!"
+        exit 1
+    fi
 
-    echo "Table 'existing_accounts' has been created successfully."
+    # Copy the init.sql file into the Docker container
+    echo "Copying $init_sql to Docker container..."
+    docker cp "$init_sql" "$CONTAINER_NAME:/init.sql"
+
+    # Execute the init.sql file inside the PostgreSQL container
+    echo "Running $init_sql to initialize the database..."
+    docker exec -i $CONTAINER_NAME psql -U $POSTGRES_USER -d $POSTGRES_DB -f /init.sql
+
+    echo "Database initialized successfully from $init_sql."
 
     # Confirm the container is running
     echo "PostgreSQL container is running with the following details:"
