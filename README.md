@@ -1,3 +1,13 @@
+# Known Problems
+
+* Snapshot does not contain all the accounts. E.g. 11111111111111111111111111111112w, that have 1.5 SOL. Don't know why, maybe it's because 
+node trying to save some space by not including old accounts into snapshot. Or maybe it's because there no transactions from this account, 
+meaning nobody have private key for this account. Or maybe it's because of some other reason. Gonna investigate this later. 
+If you know something, please, create an issue or contact me. Thanks!
+
+* There is no actual bruteforce implementation yet. I'm working on it.
+
+
 # Requirements
 
 You need roughly 500GB of free space to initialize this project and 6GB afterwards.
