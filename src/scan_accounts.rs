@@ -18,7 +18,8 @@ use thiserror::Error;
 use crate::postgres_actor::{PostgresActor, PostgresMessage};
 
 // The amount of account files to process in a single chunk
-const CHUNK_SIZE: usize = 1000;
+pub const CHUNK_SIZE: usize = 1000;
+pub const CHANNEL_BUFFER_SIZE: usize = 100;
 
 #[derive(Error, Debug)]
 pub enum ScanAccountsError {
@@ -118,7 +119,8 @@ pub async fn scan_accounts(db_url: &str, unarchived_snapshot_path: PathBuf) -> R
         .map(|entry| Arc::new(entry.path()))
         .collect();
 
-    let (postgres_message_tx, postgres_messages_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (postgres_message_tx, postgres_messages_rx) =
+        tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
     let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
     let (completion_tx, completion_rx) = tokio::sync::oneshot::channel(); // Completion channel
 
@@ -153,7 +155,7 @@ pub async fn scan_accounts(db_url: &str, unarchived_snapshot_path: PathBuf) -> R
                     Ok(inner_result) => {
                         let vec = inner_result.into_iter().collect::<Vec<_>>();
                         postgres_message_tx
-                            .send(PostgresMessage::InsertAccountsButch(vec))
+                            .blocking_send(PostgresMessage::InsertAccountsButch(vec))
                             .expect("Failed to send accounts, receiver dropped");
                     }
                     Err(e) => panic!("Error: {:?}", e),

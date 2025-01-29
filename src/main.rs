@@ -114,7 +114,7 @@ async fn main() -> Result<()> {
         }
         Some(("start", _)) => {
             info!("Running default start behavior...");
-            run_bruteforce(&db_url).await?;
+            run_bruteforce(&db_url, &config).await?;
         }
         _ => panic!("Unrecognized subcommand"), // Fallback for unknown subcommands
     };

@@ -26,6 +26,7 @@ pub const FLUSH_THRESHOLD: usize = 10_000;
 // Set to 1 due to deadlock issues with parallel connections
 pub const MAX_PSQL_CONNECTIONS: u32 = 1;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostgresMessage {
     InsertAccountsButch(Vec<AccountWithBalance>),
     CheckAccountsButch(Vec<AccountWithPrivateKey>),
@@ -38,16 +39,18 @@ pub struct AccountWithPrivateKey {
     pub private_key: [u8; 32],
 }
 
+/// PostgresActor is responsible for inserting accounts into the database
+/// and checking if any of the provided accounts exist in the database.
 pub struct PostgresActor {
     pool: Arc<Pool<Postgres>>,
-    accounts_buffer: Vec<AccountWithBalance>,
+    accounts_with_balance_buffer: Vec<AccountWithBalance>,
     flush_interval: Interval,
 }
 
 impl PostgresActor {
     pub async fn new(
         url: &str,
-        accounts_rc: mpsc::UnboundedReceiver<PostgresMessage>,
+        accounts_rc: mpsc::Receiver<PostgresMessage>,
         exit_signal: oneshot::Receiver<()>,
         completion_signal: oneshot::Sender<()>,
     ) -> Result<()> {
@@ -65,7 +68,7 @@ impl PostgresActor {
 
         let actor = PostgresActor {
             pool,
-            accounts_buffer: Vec::new(),
+            accounts_with_balance_buffer: Vec::new(),
             flush_interval: tokio::time::interval(FLUSH_TIMEOUT),
         };
 
@@ -176,12 +179,12 @@ impl PostgresActor {
     async fn handle_message(&mut self, message: PostgresMessage) {
         match message {
             PostgresMessage::InsertAccountsButch(accounts) => {
-                self.accounts_buffer.extend(accounts);
+                self.accounts_with_balance_buffer.extend(accounts);
 
-                if self.accounts_buffer.len() >= FLUSH_THRESHOLD {
+                if self.accounts_with_balance_buffer.len() >= FLUSH_THRESHOLD {
                     let to_flush = self
-                        .accounts_buffer
-                        .split_off(self.accounts_buffer.len() - FLUSH_THRESHOLD);
+                        .accounts_with_balance_buffer
+                        .split_off(self.accounts_with_balance_buffer.len() - FLUSH_THRESHOLD);
 
                     if let Err(e) = Self::flush(&to_flush, self.pool.clone()).await {
                         error!("Failed to flush accounts: {:?}", e);
@@ -194,10 +197,16 @@ impl PostgresActor {
             }
             PostgresMessage::CheckAccountsButch(accounts_with_private_keys) => {
                 // Check if any pubkeys exist in the database
+                let time_before_check = std::time::Instant::now();
                 match Self::check_accounts_exist(self.pool.clone(), &accounts_with_private_keys)
                     .await
                 {
                     Ok(exists) => {
+                        debug!(
+                            "Checking accounts took: {}ms",
+                            time_before_check.elapsed().as_millis()
+                        );
+
                         if exists {
                             info!("At least one of the provided accounts exists in the database.");
                             // Fetch the accounts that exist in the database and insert them into the found_accounts table
@@ -209,8 +218,6 @@ impl PostgresActor {
                             {
                                 error!("Failed to insert found accounts into found_accounts table: {:?}, data: {:#?}", e, accounts_with_private_keys);
                             }
-                        } else {
-                            info!("None of the provided accounts exist in the database.");
                         }
                     }
                     Err(e) => error!("Failed to check accounts: {:?}", e),
@@ -221,7 +228,7 @@ impl PostgresActor {
 
     async fn run(
         mut self,
-        mut messages_rc: mpsc::UnboundedReceiver<PostgresMessage>,
+        mut messages_rc: mpsc::Receiver<PostgresMessage>,
         mut exit_signal: oneshot::Receiver<()>,
         completion_signal: oneshot::Sender<()>,
     ) {
@@ -229,6 +236,7 @@ impl PostgresActor {
         let mut flush_interval = tokio::time::interval(FLUSH_TIMEOUT);
 
         loop {
+            debug!("Messages size: {}", messages_rc.len());
             select! {
                 // Handle receiving new accounts
                 Some(message) = messages_rc.recv() => {

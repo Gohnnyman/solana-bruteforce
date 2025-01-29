@@ -4,3 +4,16 @@ port = 5432
 user = "postgres"
 password = "password"
 name = "bruteforce"
+
+
+[bruteforce]
+# Number of threads to use for bruteforcing, num_cpu::get() is used if not specified
+# num_of_threads = 24
+
+# Number of private keys to generate per thread
+# This amount of keys would be butch-checked in the database
+private_keys_per_thread = 100_000
+
+
+# Shows overall amount of checked keys each $status_update_interval_sec seconds
+status_update_interval_sec = 60
