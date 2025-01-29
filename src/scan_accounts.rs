@@ -19,7 +19,7 @@ use crate::postgres_actor::{PostgresActor, PostgresMessage};
 
 // The amount of account files to process in a single chunk
 pub const CHUNK_SIZE: usize = 1000;
-pub const CHANNEL_BUFFER_SIZE: usize = 100;
+pub const CHANNEL_BUFFER_SIZE: usize = 10_000;
 
 #[derive(Error, Debug)]
 pub enum ScanAccountsError {

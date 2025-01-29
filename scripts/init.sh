@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e 
+
 # Global variable for the temporary directory
 TMP_DIR=""
 # Variable for the ledger folder name
@@ -95,7 +97,8 @@ init_docker() {
     sleep 5
 
      # Check if init.sql exists
-    local init_sql="init.sql"
+    local init_sql="$(dirname "$0")/init.sql"
+
     if [ ! -f "$init_sql" ]; then
         echo "Error: $init_sql file not found!"
         exit 1
@@ -199,16 +202,6 @@ check_requirements() {
     # Check for Rust (cargo) installation
     if ! command -v cargo &> /dev/null; then
         missing_deps+=("cargo (Rust)")
-    fi
-
-    # Check for PostgreSQL client (psql)
-    if ! command -v psql &> /dev/null; then
-        missing_deps+=("PostgreSQL client (psql)")
-    fi
-
-    # Check for yq (TOML parser)
-    if ! python3 -c "import yq" &> /dev/null; then
-        missing_deps+=("yq (TOML parser, install via pip)")
     fi
 
     # Print missing dependencies

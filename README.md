@@ -18,7 +18,7 @@ You need roughly 500GB of free space to initialize this project and 6GB afterwar
 Init script (`make`) will initialize the project, download the latest snapshot, unarchive it, create dockerized postgres
 and inserts the accounts from the snapshot into DB.
 
-This long initialization (45 minutes) is needed because all the accounts will be stored locally in the database,
+This long initialization (45+ minutes) is needed because all the accounts will be stored locally in the database,
 thus it'll allow to check whether the private key leads to the public key that has (or had) any SOL on it without
 any external API calls. You could even run this script without internet connection after the initialization.
 This boosts the speed of the bruteforce process significantly.

@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Global variable for the temporary directory
+TMP_DIR="./tmp"
+
 # Function to clean up the Docker container and database resources
 cleanup_docker() {
     # Container name used in init_docker.sh
@@ -33,11 +36,23 @@ cleanup_postgres_data() {
     fi
 }
 
+# Function to clean up the temporary directory
+cleanup_tmp_dir() {
+    if [[ -d "$TMP_DIR" ]]; then
+        echo "Cleaning up temporary directory: $TMP_DIR"
+        rm -rf "$TMP_DIR"
+        echo "Temporary directory '$TMP_DIR' has been removed."
+    else
+        echo "No temporary directory '$TMP_DIR' found."
+    fi
+}
+
 # Main cleanup function
 cleanup() {
     echo "Starting cleanup process..."
     cleanup_docker
     cleanup_postgres_data
+    cleanup_tmp_dir
     echo "Cleanup process completed."
 }
 
