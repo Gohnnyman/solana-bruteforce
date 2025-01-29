@@ -236,14 +236,15 @@ parse_config
 # Check if the Docker container already exists
 check_docker_container
 
+# Initialize the Docker container and setup the database
+init_docker
+
 # Git clone the solana-snapshot-finder repository and download snapshot
 install_and_run_snapshot_finder
 
 # Unarchive the snapshot file
 unarchive_snapshot
 
-# Initialize the Docker container and setup the database
-init_docker
 
 # Scan accounts from AccountsDB and populate the database
 scan_accounts_from_accountsdb
