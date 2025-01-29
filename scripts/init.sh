@@ -185,6 +185,49 @@ scan_accounts_from_accountsdb() {
     cargo run -- scan_accounts --path "$ledger_dir"
 }
 
+# Function to check if required dependencies are installed
+check_requirements() {
+    local missing_deps=()
+
+    # Check for required dependencies
+    for dep in docker git python3 pip curl cargo unzstd; do
+        if ! command -v $dep &> /dev/null; then
+            missing_deps+=("$dep")
+        fi
+    done
+
+    # Check for Rust (cargo) installation
+    if ! command -v cargo &> /dev/null; then
+        missing_deps+=("cargo (Rust)")
+    fi
+
+    # Check for PostgreSQL client (psql)
+    if ! command -v psql &> /dev/null; then
+        missing_deps+=("PostgreSQL client (psql)")
+    fi
+
+    # Check for yq (TOML parser)
+    if ! python3 -c "import yq" &> /dev/null; then
+        missing_deps+=("yq (TOML parser, install via pip)")
+    fi
+
+    # Print missing dependencies
+    if [ ${#missing_deps[@]} -ne 0 ]; then
+        echo "Error: The following dependencies are missing:"
+        for dep in "${missing_deps[@]}"; do
+            echo "  - $dep"
+        done
+        echo "Please install the missing dependencies and try again."
+        exit 1
+    fi
+
+    echo "All required dependencies are installed."
+}
+
+# Call the check_requirements function at the beginning of the script
+check_requirements
+
+
 # Main script execution
 
 # Create a temporary directory

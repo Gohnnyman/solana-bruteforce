@@ -7,7 +7,8 @@ meaning nobody have private key for this account.
 Or maybe it's because of some other reason. Gonna investigate this later. 
 If you know something, please, create an issue or contact me. Thanks!
 
-* There is no actual bruteforce implementation yet. I'm working on it.
+* Though the bruteforce process is significantly faster than the standart approach with RPC calls, it could be optimized even more.
+I checked the performance and it turns out PostgreSQL is not the bottleneck (yet), but generating the private keys is. 
 
 
 # Requirements
@@ -30,6 +31,11 @@ each of them, via RPC calls, but with this approach it's possible to check all o
 Under "reasonable time" I mean it will increase the speed of the bruteforce process by 1000x times, which means it would 
 take not 10^66, but 10^63 years to check all the possible private keys (10^10 years is the age of the universe). Impressive, huh?
 
+# Benchmark
+
+Well, there is no actuall benchmarking here, but on my machine (AMD Ryzen 9 7900X 12-Core Processor, GeForce RTX 4080, 32RAM) it takes 
+one minute to check 7_200_000 accounts or 120_000 accounts/second.
+
 # Notice 
 I'm not trying to steal anyone's SOL; I made this pet project just for fun (at the moment of writing this project I was unemployed). 
 Not that it could actually find anything...
@@ -44,4 +50,9 @@ make
 
 2. Now you have dockerized postgres running with the accounts from the latest snapshot.
 
-3. todo!();
+3. Run the bruteforce
+```bash
+make start
+```
+
+4. Check the logs. If the program finds something (which I doubt), you'll see a message. Then, check the found_accounts table in the database for the private key.

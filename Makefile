@@ -4,6 +4,9 @@ all:
 	@chmod +x scripts/init.sh
 	@./scripts/init.sh
 
+start: 
+	@cargo run -- start
+
 clean-docker:
 	@./scripts/clean.sh
 
