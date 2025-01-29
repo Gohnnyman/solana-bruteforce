@@ -12,7 +12,7 @@ name = "bruteforce"
 
 # Number of private keys to generate per thread
 # This amount of keys would be butch-checked in the database
-private_keys_per_thread = 100_000
+private_keys_per_thread = 5_000
 
 
 # Shows overall amount of checked keys each $status_update_interval_sec seconds

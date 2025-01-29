@@ -1,14 +1,7 @@
 # Known Problems
 
-* Snapshot does not contain all the accounts. E.g. 11111111111111111111111111111112w, that have 1.5 SOL. Don't know why, maybe it's because 
-node trying to save some space by not including old accounts into snapshot. 
-Or maybe it's because there no transactions from this account, 
-meaning nobody have private key for this account. 
-Or maybe it's because of some other reason. Gonna investigate this later. 
-If you know something, please, create an issue or contact me. Thanks!
-
 * Though the bruteforce process is significantly faster than the standart approach with RPC calls, it could be optimized even more.
-I checked the performance and it turns out PostgreSQL is not the bottleneck (yet), but generating the private keys is. 
+I checked the performance and it turns PostgreSQL is the bottleneck. 
 
 
 # Requirements
@@ -18,7 +11,7 @@ You need roughly 500GB of free space to initialize this project and 6GB afterwar
 Init script (`make`) will initialize the project, download the latest snapshot, unarchive it, create dockerized postgres
 and inserts the accounts from the snapshot into DB.
 
-This long initialization (45+ minutes) is needed because all the accounts will be stored locally in the database,
+This long initialization (1.5 hours approximately) is needed because all the accounts will be stored locally in the database,
 thus it'll allow to check whether the private key leads to the public key that has (or had) any SOL on it without
 any external API calls. You could even run this script without internet connection after the initialization.
 This boosts the speed of the bruteforce process significantly.
@@ -34,7 +27,7 @@ take not 10^66, but 10^63 years to check all the possible private keys (10^10 ye
 # Benchmark
 
 Well, there is no actuall benchmarking here, but on my machine (AMD Ryzen 9 7900X 12-Core Processor, GeForce RTX 4080, 32RAM) it takes 
-one minute to check 7_200_000 accounts or 120_000 accounts/second.
+one minute to check 2_590_000 accounts or 43_167 accounts/second.
 
 # Notice 
 I'm not trying to steal anyone's SOL; I made this pet project just for fun (at the moment of writing this project I was unemployed). 
