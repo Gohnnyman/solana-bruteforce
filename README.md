@@ -8,7 +8,7 @@ I checked the performance and it turns PostgreSQL is the bottleneck.
 
 You need roughly 500GB of free space to initialize this project and 6GB afterwards.
 
-Init script (`make`) will initialize the project, download the latest snapshot, unarchive it, create dockerized postgres
+Init script (`make init`) will initialize the project, download the latest snapshot, unarchive it, create dockerized postgres
 and inserts the accounts from the snapshot into DB.
 
 This long initialization (1.5 hours approximately) is needed because all the accounts will be stored locally in the database,
@@ -38,7 +38,7 @@ Not that it could actually find anything...
 
 1. This will do every step needed to initialize the project:
 ```bash
-make
+make init
 ```
 
 2. Now you have dockerized postgres running with the accounts from the latest snapshot.
